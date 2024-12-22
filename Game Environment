@@ -1,0 +1,299 @@
+import random
+from strategies import ProtectionStrategy, OffensiveStrategy
+
+class Player:
+    def __init__(self, name, role, faction, money=3):
+        self.name = name
+        self.role = role  # "seer", "manipulator", "phoenix", "regular" etc.
+        self.faction = faction  # "normal", "swapper", "guesser"
+        self.alive = True
+        self.points = 0
+        self.money = money
+        self.location = None
+        self.used_ability = False
+        self.protected_this_round = False
+
+        if self.role == "manipulator":
+            self.used_ability = False
+        if self.role == "phoenix":
+            self.used_ability = False  # Revive once if dead
+
+    def vote_on_policy(self, policy):
+        if self.role == 'seer':
+            guess = policy.actual_outcome
+        else:
+            guess = random.choice(["oppose", "support"])
+        return guess
+
+    def apply_location_effect(self, players, round_log):
+        if self.location is not None:
+            before_money = self.money
+            before_points = self.points
+            before_alive = self.alive
+            self.location.apply_effect(self, players)
+
+            changes = []
+            if self.money != before_money:
+                changes.append(f"Money: {before_money} -> {self.money}")
+            if self.points != before_points:
+                changes.append(f"Points: {before_points} -> {self.points}")
+            if not before_alive and self.alive:
+                changes.append("Revived")
+            if changes:
+                round_log.append(f"{self.name} ({self.role}, {self.faction}) visited {self.location.name} and changes occurred: {', '.join(changes)}")
+
+    def __repr__(self):
+        return (f"{self.name} (Role: {self.role}, Faction: {self.faction}, Points: {self.points}, "
+                f"Money: {self.money}, Alive: {self.alive})")
+
+class Location:
+    def __init__(self, name, cost=0, score_modifier=0, money_modifier=0, revive=False, heist=False):
+        self.name = name
+        self.cost = cost
+        self.score_modifier = score_modifier
+        self.money_modifier = money_modifier
+        self.revive = revive  # If True, can revive dead player
+        self.heist = heist    # If True, player steals from others
+
+    def apply_effect(self, player, all_players):
+        # Revival logic
+        if self.revive and not player.alive and player.money >= self.cost:
+            player.money -= self.cost
+            player.alive = True
+        else:
+            # Normal effect
+            if player.money >= self.cost:
+                player.money -= self.cost
+                player.points += self.score_modifier
+                player.money += self.money_modifier
+
+        # Heist logic
+        if self.heist and player.alive:
+            for p in all_players:
+                if p != player and p.money > 0:
+                    p.money -= 1
+                    player.money += 1
+
+    def __repr__(self):
+        return (f"Location({self.name}, Cost: {self.cost}, ScoreMod: {self.score_modifier}, "
+                f"MoneyMod: {self.money_modifier}, Revive: {self.revive}, Heist: {self.heist})")
+
+class Policy:
+    def __init__(self):
+        self.actual_outcome = random.choice(["oppose", "support"])
+
+def manipulator_action(players, policies, round_log):
+    manipulators = [p for p in players if p.alive and p.role == "manipulator" and p.used_ability == False]
+    if manipulators and policies:
+        manipulator = manipulators[0]
+        next_policy_outcome = policies[0].actual_outcome if policies else None
+        round_log.append(f"{manipulator.name} (Manipulator) sees next policy outcome before shuffle: {next_policy_outcome}")
+        random.shuffle(policies)
+        manipulator.used_ability = True
+        round_log.append(f"{manipulator.name} (Manipulator) shuffled the remaining policies.")
+
+def phoenix_revive(players, round_log):
+    for player in players:
+        if not player.alive and player.role == "phoenix" and player.used_ability == False:
+            player.alive = True
+            player.used_ability = True
+            round_log.append(f"{player.name} (Phoenix) used their one-time revive!")
+
+def voting_phase_interactions(players, votes, round_log):
+    alive_players = [p for p in players if p.alive]
+    for player in alive_players:
+        if player.money > 0 and hasattr(player, 'strategy'):
+            action, target = player.strategy.decide_action(player, alive_players)
+            if action == "protect":
+                player.money -= 1
+                player.protected_this_round = True
+                round_log.append(f"{player.name} ({player.role}, {player.faction}) spent 1 money to protect themselves this round.")
+            elif action == "attack" and target is not None:
+                player.money -= 1
+                old_points = target.points
+                target.points = max(0, target.points - 1)
+                round_log.append(f"{player.name} ({player.role}, {player.faction}) spent 1 money to force {target.name} ({target.role}, {target.faction})'s points: {old_points} -> {target.points}")
+
+def questioning_phase(players, round_log):
+    # One player pays another to ask about the policy’s outcome
+    alive_players = [p for p in players if p.alive and p.money > 0]
+    if len(alive_players) < 2:
+        return  # Need at least two players
+
+    asker = random.choice(alive_players)
+    potential_targets = [p for p in alive_players if p != asker]
+    if not potential_targets:
+        return
+
+    target = random.choice(potential_targets)
+    # Ask the question - costs 1 money
+    asker.money -= 1
+    # The target can lie or tell truth - we choose randomly
+    response = random.choice(["oppose", "support"])
+    round_log.append(f"{asker.name} ({asker.role}, {asker.faction}) pays 1 money to ask {target.name} ({target.role}, {target.faction}) about the policy. {target.name}'s answer: {response} (could be a lie).")
+
+def run_round(players, policies, locations, round_number):
+    round_log = [f"--- Round {round_number} Actions ---"]
+    if not policies:
+        round_log.append("No more policies left.")
+        print("\n".join(round_log))
+        return
+
+    current_policy = policies.pop(0)
+    round_log.append(f"Policy outcome this round: {current_policy.actual_outcome}")
+
+    # Questioning Phase (before voting)
+    questioning_phase(players, round_log)
+
+    # Voting step
+    votes = {}
+    for player in players:
+        if player.alive:
+            guess = player.vote_on_policy(current_policy)
+            votes[player] = guess
+            round_log.append(f"{player.name} ({player.role}, {player.faction}) voted: {guess}")
+
+    # Money interventions during voting phase
+    voting_phase_interactions(players, votes, round_log)
+
+    # Apply results of votes
+    for player, guess in votes.items():
+        if guess == current_policy.actual_outcome:
+            player.points += 1
+            round_log.append(f"{player.name} ({player.role}, {player.faction}) guessed correctly and gained a point (Total: {player.points})")
+        else:
+            if not player.protected_this_round:
+                player.alive = False
+                round_log.append(f"{player.name} ({player.role}, {player.faction}) guessed incorrectly and was eliminated.")
+            else:
+                round_log.append(f"{player.name} ({player.role}, {player.faction}) guessed incorrectly but was protected and stayed alive.")
+
+    # Reset protection flags
+    for p in players:
+        p.protected_this_round = False
+
+    # Locations
+    for player in players:
+        chosen_loc = random.choice(locations) if locations else None
+        player.location = chosen_loc
+        if chosen_loc:
+            round_log.append(f"{player.name} ({player.role}, {player.faction}) goes to {chosen_loc.name}")
+        player.apply_location_effect(players, round_log)
+
+    # Random trade among alive players
+    alive_players = [p for p in players if p.alive]
+    if len(alive_players) > 1:
+        giver = random.choice(alive_players)
+        receiver_candidates = [p for p in alive_players if p != giver]
+        if receiver_candidates and giver.money > 0:
+            receiver = random.choice(receiver_candidates)
+            giver.money -= 1
+            receiver.money += 1
+            round_log.append(f"{giver.name} ({giver.role}, {giver.faction}) gave 1 money to {receiver.name} ({receiver.role}, {receiver.faction})")
+
+    # Manipulator action after the round
+    manipulator_action(players, policies, round_log)
+
+    # Phoenix revive after round
+    phoenix_revive(players, round_log)
+
+    print("\n".join(round_log))
+
+
+def guesser_guess(players):
+    # The guesser tries to guess who the swapper is
+    # For now, pick a random alive player and guess they are the swapper
+    guessers = [p for p in players if p.faction == "guesser" and p.alive]
+    swappers = [p for p in players if p.faction == "swapper"]
+    if guessers and swappers:
+        guesser = guessers[0]
+        guess_target = random.choice(players)
+        # Check if guess_target is a swapper
+        if guess_target in swappers:
+            return True, guesser, guess_target
+        else:
+            return False, guesser, guess_target
+    return None, None, None
+
+def determine_winner(players):
+    # Guesser guess first
+    guess_result, guesser, guess_target = guesser_guess(players)
+
+    if guess_result is True:
+        # Guesser guessed correctly
+        return guesser, "Guesser correctly identified the Swapper and wins!"
+    elif guess_result is False:
+        # Guesser guessed incorrectly
+        # Proceed with other conditions
+        pass
+
+    alive_players = [p for p in players if p.alive]
+    total_players = len(players)
+    alive_count = len(alive_players)
+    dead_count = total_players - alive_count
+
+    if alive_count == 0:
+        # If no one is alive, Swapper faction wins if present
+        swappers = [p for p in players if p.faction == "swapper"]
+        if swappers:
+            return swappers[0], "Swapper wins because all are dead"
+        return None, "No winners"
+    else:
+        # Some alive. Check majority:
+        majority_alive = alive_count > dead_count
+
+        # If majority alive, only the single highest point player wins
+        if majority_alive:
+            max_points = max(p.points for p in alive_players)
+            top_scorers = [p for p in alive_players if p.points == max_points]
+            if len(top_scorers) == 1:
+                return top_scorers[0], "Single highest point player wins with majority alive"
+            else:
+                return top_scorers, "Tie among highest point players with majority alive"
+        else:
+            # Majority are dead
+            # Swapper wins if any swapper exists when majority dead
+            swappers = [p for p in players if p.faction == "swapper"]
+            if swappers:
+                return swappers[0], "Swapper wins because majority are dead"
+            return None, "No swapper present, no clear winner."
+
+if __name__ == "__main__":
+    # Example setup:
+    # Roles: "seer", "manipulator", "phoenix", "regular"
+    # Factions: "normal", "swapper", "guesser"
+    # We'll pick 5 players and randomly assign one swapper, one guesser, rest normal
+    roles = ["seer", "manipulator", "phoenix", "regular", "regular"]
+    random.shuffle(roles)
+
+    factions = ["normal"] * 5
+    # Assign one swapper and one guesser
+    factions[0] = "swapper"
+    factions[1] = "guesser"
+    # Rest normal
+
+    players = [Player(name=f"Player{i+1}", role=roles[i], faction=factions[i]) for i in range(5)]
+    # Optional: Assign strategies
+    # players[0].strategy = ProtectionStrategy()
+    # players[1].strategy = OffensiveStrategy()
+
+    policies = [Policy() for _ in range(5)]
+    locations = [
+        Location(name="Market", cost=1, score_modifier=-2, money_modifier=0),
+        Location(name="Cafe", cost=0, score_modifier=0, money_modifier=0),
+        Location(name="Bank", cost=2, score_modifier=1, money_modifier=1),
+        Location(name="RevivalTemple", cost=2, revive=True),
+        Location(name="Heist", heist=True),
+        Location(name="TreasureHoard", money_modifier=2)
+    ]
+
+    for i in range(1, 6):
+        run_round(players, policies, locations, i)
+
+    winner, reason = determine_winner(players)
+
+    print("\nFinal Results:")
+    for p in players:
+        print(p)
+    print("Winner:", winner)
+    print("Reason:", reason)
