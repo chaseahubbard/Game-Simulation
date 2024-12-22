@@ -1,0 +1,47 @@
+# strategies.py
+
+class BaseStrategy:
+    """
+    A base strategy class that other strategies can inherit from.
+    Each strategy should define how a player uses money during the voting phase.
+    """
+    def __init__(self):
+        pass
+
+    def decide_action(self, player, alive_players):
+        """
+        Given a player and the list of alive players, decide what action (if any)
+        the player will take.
+        
+        Return one of the following:
+        - ("protect", None) if player chooses to protect themselves
+        - ("attack", target_player) if player chooses to attack a specific target player
+        - (None, None) if player chooses to do nothing
+        """
+        return (None, None)
+
+
+class ProtectionStrategy(BaseStrategy):
+    """
+    A strategy that always attempts to protect the player if they have money.
+    If they don't have money, they do nothing.
+    """
+    def decide_action(self, player, alive_players):
+        if player.money > 0:
+            # Always protect themselves if possible
+            return ("protect", None)
+        return (None, None)
+
+
+class OffensiveStrategy(BaseStrategy):
+    """
+    A strategy that always attempts to attack another player if the player has money
+    and there is at least one other target. Otherwise, does nothing.
+    """
+    def decide_action(self, player, alive_players):
+        targets = [p for p in alive_players if p != player]
+        if player.money > 0 and targets:
+            # Always attack a random target (strategy could be more sophisticated)
+            target = targets[0]  # Just pick the first alive player for demonstration
+            return ("attack", target)
+        return (None, None)
